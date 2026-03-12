@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut enc = Encoder::new();
 
     // Set up 256 arithmetic coding context(s)
-    let mut contexts: Vec<VectorCountSymbolModel> = (0..256)
+    let mut contexts: Vec<VectorCountSymbolModel<i32>> = (0..256)
         .map(|_| VectorCountSymbolModel::new((0..=255).collect()))
         .collect();
 
@@ -126,37 +126,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for c in 0..width {
                     let pixel_index = (r * width + c) as usize;
 
-                    // CONTEXT MODELING: Use the local temporal error from left & top neighbors
-                    let left_err = if c > 0 {
-                        (current_frame[pixel_index - 1] as i32 - prior_frame[pixel_index - 1] as i32).abs() as usize
-                    } else {
-                        0
-                    };
-                    
-                    let top_err = if r > 0 {
-                        (current_frame[pixel_index - width as usize] as i32 - prior_frame[pixel_index - width as usize] as i32).abs() as usize
-                    } else {
-                        0
-                    };
-                    
-                    // Average the neighbor errors and cap at 255 to select the context (0-255)
-                    let ctx = if c > 0 && r > 0 {
-                        (left_err + top_err) / 2
-                    } else {
-                        left_err + top_err
-                    }.min(255);
+                    // 1. Calculate the exact difference of the LEFT pixel (defaults to 0 for the first column)
+                    let left_diff = if c > 0 {
+                        (((current_frame[pixel_index - 1] as i32) - (prior_frame[pixel_index - 1] as i32)) + 256) % 256
+                    } else { 
+                        0 
+                    } as usize;
 
-                    // Encode difference with same pixel in prior frame.
-                    // Normalize and modulate difference to 8-bit range.
+                    // 2. The Context ID is simply the left pixel's difference!
+                    let ctx = left_diff;
+
+                    // 3. Encode difference 
                     let pixel_difference = (((current_frame[pixel_index] as i32)
                         - (prior_frame[pixel_index] as i32))
                         + 256)
                         % 256;
 
-                    // Encode using the dynaically selected context
+                    // 4. Use the specific context for this pixel
                     enc.encode(&pixel_difference, &contexts[ctx], &mut bw);
-
-                    // Update context
                     contexts[ctx].incr_count(&pixel_difference);
                 }
             }
@@ -201,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut dec = Decoder::new();
 
-        let mut contexts: Vec<VectorCountSymbolModel> = (0..256)
+        let mut contexts: Vec<VectorCountSymbolModel<i32>> = (0..256)
             .map(|_| VectorCountSymbolModel::new((0..=255).collect()))
             .collect();
 
@@ -223,25 +210,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for r in 0..height {
                     for c in 0..width {
                         let pixel_index = (r * width + c) as usize;
-                        // Predict context using RECONSTRUCTED frame to ensure purely independent decoding
-                        let left_err = if c > 0 {
-                            (reconstructed_frame[pixel_index - 1] as i32 - prior_frame[pixel_index - 1] as i32).abs() as usize
-                        } else {
-                            0
-                        };
-                        let top_err = if r > 0 {
-                            (reconstructed_frame[pixel_index - width as usize] as i32 - prior_frame[pixel_index - width as usize] as i32).abs() as usize
-                        } else {
-                            0
-                        };
-                        let ctx = if c > 0 && r > 0 {
-                            (left_err + top_err) / 2
-                        } else {
-                            left_err + top_err
-                        }.min(255);
+                        // 1. Calculate the exact difference of the LEFT pixel using the reconstructed frame
+                        let left_diff = if c > 0 {
+                            (((reconstructed_frame[pixel_index - 1] as i32) - (prior_frame[pixel_index - 1] as i32)) + 256) % 256
+                        } else { 
+                            0 
+                        } as usize;
+
+                        // 2. The Context ID is simply the left pixel's difference!
+                        let ctx = left_diff;
+
+                        // 3. Decode using the chosen context
                         let decoded_pixel_difference = dec.decode(&contexts[ctx], &mut br).to_owned();
                         contexts[ctx].incr_count(&decoded_pixel_difference);
 
+                        // 4. Calculate actual pixel value and save it to the reconstructed frame
                         let pixel_value = (prior_frame[pixel_index] as i32 + decoded_pixel_difference) % 256;
                         reconstructed_frame[pixel_index] = pixel_value as u8;
                         
